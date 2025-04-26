@@ -1,3 +1,231 @@
+本分支针对对瑞芯微或者其他arm64，兼容openwrt，在wls上进行交叉编译，完成后使用scp上传到嵌入式linux系统，并设置开机启动服务
+编译 aarch64-unknown-linux-musl 平台 tunet 命令行工具全过程
+1.安装 Rust 环境
+在开发环境（x86-64 Linux/WSL）中：
+curl https://sh.rustup.rs -sSf | sh
+source ~/.cargo/env
+安装完成后，添加交叉编译目标：
+rustup target add aarch64-unknown-linux-musl
+2.安装 aarch64-musl 交叉编译工具链
+下载并解压 musl 交叉编译器：
+wget https://musl.cc/aarch64-linux-musl-cross.tgz
+tar xf aarch64-linux-musl-cross.tgz
+sudo mv aarch64-linux-musl-cross /opt/
+确认工具链位置：
+ls /opt/aarch64-linux-musl-cross/bin
+里面有：
+aarch64-linux-musl-gcc
+aarch64-linux-musl-strip
+...
+3.手动编译 OpenSSL (可选步骤，如果需要 openssl-sys 支持)
+如果项目需要 OpenSSL 静态链接，则需要编译 OpenSSL：
+git clone https://github.com/openssl/openssl.git
+cd openssl
+export CC=/opt/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc
+./Configure linux-aarch64 no-shared no-async no-dso no-tests --prefix=/opt/openssl-aarch64
+make -j$(nproc)
+sudo make install_sw
+设置环境变量：
+export OPENSSL_DIR=/opt/openssl-aarch64
+export OPENSSL_STATIC=1
+4.配置 Cargo 交叉编译（可选）
+如果想让 cargo 自动识别交叉编译器，可以添加 .cargo/config.toml：
+mkdir -p .cargo
+vi .cargo/config.toml
+内容如下：
+[target.aarch64-unknown-linux-musl]
+linker = "/opt/aarch64-linux-musl-cross/bin/aarch64-linux-musl-gcc"
+5.编译 tunet 命令行版本
+进入 tunet-rust-master 源码根目录后：
+
+直接只编译 tunet 子项目（不编 tunet-cui）：
+cargo build --release --package tunet --target aarch64-unknown-linux-musl
+6.Strip 优化文件体积
+编译完成后，执行：
+/opt/aarch64-linux-musl-cross/bin/aarch64-linux-musl-strip target/aarch64-unknown-linux-musl/release/tunet
+strip 以后，文件体积大幅缩小，适合 OpenWRT 路由器空间。
+7.上传 tunet 到 OpenWRT 路由器
+使用 scp 上传：
+scp target/aarch64-unknown-linux-musl/release/tunet root@你的路由器IP:/root/
+8.设置 tunet 执行权限
+在路由器上：
+
+chmod +x /root/tunet
+9.测试手动登录/注销
+启用自动登录需要手动登录一次保存密码，在路由器上运行：
+/root/tunet login
+显示 login_ok 说明成功！
+注销：
+/root/tunet logout
+查看状态：
+/root/tunet status
+10.（可选）
+配置开机自启
+编写 /etc/init.d/tunet 启动脚本：
+#!/bin/sh /etc/rc.common
+
+START=99
+STOP=15
+
+BIN_PATH="/root/tunet"
+LOG_FILE="/var/log/tunet.log"
+PID_FILE="/var/run/tunet.pid"
+
+start() {
+    echo "Starting tunet..."
+    [ -x "$BIN_PATH" ] || {
+        echo "Error: $BIN_PATH not found or not executable."
+        return 1
+    }
+    mkdir -p /var/run
+    mkdir -p /var/log
+    "$BIN_PATH" login > "$LOG_FILE" 2>&1 &
+    echo $! > "$PID_FILE"
+}
+
+stop() {
+    echo "Stopping tunet..."
+    [ -f "$PID_FILE" ] && kill "$(cat "$PID_FILE")" && rm -f "$PID_FILE"
+}
+然后赋权并启用：
+chmod +x /etc/init.d/tunet
+/etc/init.d/tunet enable
+/etc/init.d/tunet start
+这样可以通过 LuCI 管理 tunet 启动，也可以开机自动连网！
+
+
+#打 .ipk 包标准流程（超简版）
+1.准备目录结构
+在你的 Linux 开发机上建一个临时目录，比如：
+mkdir -p tunet-ipk/usr/bin
+然后把编译好的 tunet 复制进去：
+cp target/aarch64-unknown-linux-musl/release/tunet tunet-ipk/usr/bin/
+chmod +x tunet-ipk/usr/bin/tunet
+2.准备控制文件 control
+创建 tunet-ipk/CONTROL 目录
+mkdir -p tunet-ipk/CONTROL
+在 tunet-ipk/CONTROL/ 里新建一个 control 文件：
+vim tunet-ipk/CONTROL/control
+写入内容示例：
+Package: tunet
+Version: 0.9.5
+Depends: libc
+Architecture: aarch64_generic
+Maintainer: YourName <your@email.com>
+Description: Tsinghua University network command line login tool.
+注意事项：
+
+Package: 是名字，安装后就叫 tunet
+
+Version: 填你实际的版本
+
+Depends: 写必要依赖（libc足够了）
+
+Architecture: 必须是 OpenWRT 支持的，比如你的就是 aarch64_generic
+（你可以通过 opkg print-architecture 确认）
+
+Description: 简短描述就好
+3.打包生成 ipk
+进入 tunet-ipk/ 目录上一级：
+cd tunet-ipk
+然后一条命令打包：
+tar --format=gnu -czvf ../tunet_0.9.5_aarch64_generic.ipk --owner=0 --group=0 --numeric-owner *
+注意这里用的是 tar.gz 格式，但是扩展名改为 .ipk！
+
+然后你会在上一层看到：
+tunet_0.9.5_aarch64_generic.ipk
+这就是你的最终安装包了！
+
+安装：opkg install /tmp/tunet_0.9.5_aarch64_generic.ipk
+卸载：opkg remove tunet
+非常优雅！
+给 .ipk 包加 postinst 脚本，可以做到：
+
+安装完成后，自动执行一些命令，比如：
+
+自动赋执行权限
+
+自动注册 /etc/init.d/ 开机自启
+
+自动启动 tunet login
+
+1.创建 postinst 文件
+在你打包目录 tunet-ipk/CONTROL/ 下，新建一个叫 postinst 的文件：
+vim tunet-ipk/CONTROL/postinst
+2.写入 postinst 内容（示范）
+下面是专门为你的 tunet 工具量身定制的 postinst 示例：
+#!/bin/sh
+
+# tunet post-install script
+
+# 确保 tunet 可执行
+chmod +x /usr/bin/tunet
+
+# 创建 init.d 启动脚本
+cat <<'EOF' > /etc/init.d/tunet
+#!/bin/sh /etc/rc.common
+
+START=99
+STOP=15
+
+BIN_PATH="/usr/bin/tunet"
+LOG_FILE="/var/log/tunet.log"
+PID_FILE="/var/run/tunet.pid"
+
+start() {
+    echo "Starting tunet..."
+    [ -x "\$BIN_PATH" ] || {
+        echo "Error: \$BIN_PATH not found or not executable."
+        return 1
+    }
+    mkdir -p /var/run
+    mkdir -p /var/log
+    "\$BIN_PATH" login > "\$LOG_FILE" 2>&1 &
+    echo \$! > "\$PID_FILE"
+}
+
+stop() {
+    echo "Stopping tunet..."
+    [ -f "\$PID_FILE" ] && kill "\$(cat "\$PID_FILE")" && rm -f "\$PID_FILE"
+}
+EOF
+
+# 赋予init.d脚本执行权限
+chmod +x /etc/init.d/tunet
+
+# 启用开机自启
+/etc/init.d/tunet enable
+
+# 启动一次 tunet
+/etc/init.d/tunet start
+
+exit 0
+3.给 postinst 加执行权限
+chmod +x tunet-ipk/CONTROL/postinst
+（一定要加，不然打包后 opkg 解包执行不了！）
+重新打包 .ipk
+（同上面流程）重新打包：
+cd tunet-ipk
+tar --format=gnu -czvf ../tunet_0.9.5_aarch64_generic.ipk --owner=0 --group=0 --numeric-owner *
+cd ..
+得到新版本 .ipk，里面带了 postinst 脚本！
+然后在 OpenWRT 上安装：
+opkg install /tmp/tunet_0.9.5_aarch64_generic.ipk
+安装完成后它会自动：
+
+给 /usr/bin/tunet 加权限
+
+自动生成 /etc/init.d/tunet
+
+自动设置开机启动
+
+自动立即 login！
+
+完美！
+
+
+以下是引用原版内容：
+
 # tunet-rust
 清华大学校园网 Rust 库与客户端。
 
