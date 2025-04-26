@@ -294,6 +294,14 @@ opkg install /tmp/tunet_0.9.5_aarch64_generic.ipk
 自动立即 login！
 
 完美！
+官方资料：
+https://thu.services/utils/
+
+https://thu.services/file/RealNameAuthenticationFAQ20190614.pdf
+
+https://thu.services/file/CampusNetworkLectureNotes201909.pdf
+
+https://tuna.moe/blog/2022/ospp-summer-2022/
 
 
 以下是引用原版内容：
